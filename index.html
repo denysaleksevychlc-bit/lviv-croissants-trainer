@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lviv Croissants Speedrun Trainer</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and ReactDOM CDNs -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Lucide Icons (exposed globally for Babel) -->
+    <script src="https://unpkg.com/lucide-react@latest/dist/umd/lucide-react.js"></script>
+    
+    <!-- Firebase CDNs (Modules are required and exposed to global scope) -->
+    <script type="module">
+        // Імпортуємо необхідні функції Firebase як ES Modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, limit, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        
+        // Виставляємо імпортовані функції в глобальний об'єкт window, щоб вони були доступні у скрипті type="text/babel"
+        window.firebase = {
+            initializeApp,
+            getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, doc, addDoc, onSnapshot, collection, query, limit, orderBy, serverTimestamp
+        };
+        
+        // Глобальні змінні з Canvas середовища (імітація, якщо запускається поза ним)
+        window.__app_id = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        window.__firebase_config = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+        window.__initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        console.log("Firebase dependencies loaded and functions exposed globally.");
+    </script>
+
+    <style>
+        /* Custom scrollbar hiding for consistency */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;  /* Firefox */
+        }
+        /* Inter font for consistency */
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden; /* Prevent body scroll */
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <!-- Loader while JavaScript loads -->
+        <div class="flex items-center justify-center h-screen bg-stone-100 text-gray-500">
+            Завантаження тренажера...
+        </div>
+    </div>
+
+    <!-- The main application code -->
+    <script type="text/babel">
+        // Отримуємо функції Firebase та компоненти Lucide з глобального об'єкту
+        const { 
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, doc, addDoc, onSnapshot, collection, query, limit, orderBy, serverTimestamp 
+        } = window.firebase || {}; // Fallback in case module loading fails or is slow
+        
+        const { useState, useEffect, useMemo } = React;
+        const Lucide = window.Lucide || {}; // Ensure Lucide is available
+        const { Check, AlertCircle, Utensils, ShoppingBag, CreditCard, Banknote, Trash2, RefreshCw, ChefHat, Coffee, Croissant, Droplet, Flame, Snowflake, Award } = Lucide;
+
+
+        // --- КОНФІГУРАЦІЯ МОДИФІКАТОРІВ ---
+
+        const MODIFIERS = {
+          dough: {
+            title: 'Оберіть основу',
+            options: ['Класичний', 'Зерновий']
+          },
+          coffee_size: {
+            title: 'Оберіть розмір',
+            options: ['L', 'XL', 'XXL']
+          },
+          gyros_meat: {
+            title: 'Оберіть м\'ясо',
+            options: ['Яловичина', 'Курка']
+          },
+          burger_sauce: {
+            title: 'Оберіть соус',
+            options: ['Бургерний', 'Гострий']
+          }
+        };
+
+        // --- БАЗА ДАНИХ МЕНЮ ---
+        const MENU_DATA = {
+          savory: {
+            id: 'savory',
+            label: 'СИТНІ',
+            items: [
+              // ГРИЛЬ
+              { id: 'grill_ham', name: 'Grill з шинкою', price: 129, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'grill_salami', name: 'Grill з салямі', price: 119, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'grill_kebab', name: 'Grill Кебаб', price: 145, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'grill_chicken', name: 'Grill з куркою', price: 127, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'grill_caesar', name: 'Grill Цезар', price: 139, color: 'bg-gray-100', modifiers: ['dough'] },
+              
+              // БУРГЕРИ ТА М'ЯСНІ
+              { id: 'gyros', name: 'Гірос', price: 193, color: 'bg-gray-100', modifiers: ['dough', 'gyros_meat'] },
+              { id: 'cheeseburger', name: 'Чізбургер', price: 167, color: 'bg-gray-100', modifiers: ['dough', 'burger_sauce'] },
+              { id: 'double_cheeseburger', name: 'Дабл Чізбургер', price: 203, color: 'bg-gray-100', modifiers: ['dough', 'burger_sauce'] },
+              { id: 'kebab', name: 'Кебаб', price: 193, color: 'bg-gray-100', modifiers: ['dough', 'burger_sauce'] },
+              { id: 'chicken_teriyaki', name: 'Курка Теріякі', price: 153, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'bbq_pork', name: 'BBQ Pork', price: 169, color: 'bg-gray-100', modifiers: ['dough'] },
+
+              // РИБНІ ТА ФІЛАДЕЛЬФІЯ
+              { id: 'phila_salmon', name: 'Філадельфія з лососем', price: 197, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'phila_ham', name: 'Філадельфія з шинкою', price: 155, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'phila_veggie', name: 'Філадельфія з овочами', price: 129, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'salmon_capers', name: 'З лососем та каперс.', price: 197, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'tuna', name: 'З тунцем', price: 149, color: 'bg-gray-100', modifiers: ['dough'] },
+              
+              // КЛАСИКА
+              { id: 'jamon_moz', name: 'Хамон/Моцарела', price: 175, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'gorgonzola', name: 'Сир Горгонзола', price: 159, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'royal', name: 'Королівський', price: 153, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'lvivskiy', name: 'Львівський', price: 123, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'peasant', name: 'Селянський', price: 127, color: 'bg-gray-100', modifiers: ['dough'] },
+              { id: 'caesar', name: 'Цезар з куркою', price: 147, color: 'bg-gray-100', modifiers: ['dough'] },
+            ]
+          },
+          sweet: {
+            id: 'sweet',
+            label: 'СОЛОДКІ',
+            items: [
+              { id: 'pistachio', name: 'Фісташковий', price: 155, color: 'bg-gray-100' },
+              { id: 'choco_hazelnut', name: 'Шоко-горіхова паста', price: 139, color: 'bg-gray-100' },
+              { id: 'drunken_cherry', name: 'П\'яна вишня', price: 129, color: 'bg-gray-100' },
+              { id: 'raspberry', name: 'Малинова насолода', price: 125, color: 'bg-gray-100' },
+              { id: 'choco_banana', name: 'Шоколад та банан', price: 117, color: 'bg-gray-100' },
+              { id: 'chocolate', name: 'З шоколадом', price: 103, color: 'bg-gray-100' },
+              { id: 'grill_choco_marsh', name: 'Grill Шоко/Маршмелоу', price: 99, color: 'bg-gray-100' },
+            ]
+          },
+          hot: {
+            id: 'hot',
+            label: 'КАВА/КАКАО',
+            items: [
+              { id: 'latte', name: 'Лате', price: '53/65/74', color: 'bg-gray-100', modifiers: ['coffee_size'] },
+              { id: 'cappuccino', name: 'Капучино', price: '50/64/73', color: 'bg-gray-100', modifiers: ['coffee_size'] },
+              { id: 'cold_latte', name: 'Холодне Лате XL', price: 65, color: 'bg-gray-100' },
+              { id: 'cold_cappuccino', name: 'Холодне Капучино XL', price: 64, color: 'bg-gray-100' },
+              { id: 'cocoa', name: 'Какао', price: 65, color: 'bg-gray-100' },
+              { id: 'flat_white', name: 'Флет Вайт', price: 59, color: 'bg-gray-100' },
+              { id: 'doppio', name: 'Допіо', price: 45, color: 'bg-gray-100' },
+              { id: 'americano', name: 'Американо', price: 42, color: 'bg-gray-100' },
+              { id: 'espresso', name: 'Еспресо', price: 35, color: 'bg-gray-100' },
+              { id: 'ristretto', name: 'Рістрето', price: 35, color: 'bg-gray-100' },
+            ]
+          },
+          tea: {
+            id: 'tea',
+            label: 'ЧАЙ',
+            items: [
+              // Вітамінні
+              { id: 'vit_ginger', name: 'Імбир, лайм, мед', price: 65, color: 'bg-gray-100' },
+              { id: 'vit_seabuckthorn', name: 'Обліпиха чебрець', price: 65, color: 'bg-gray-100' },
+              { id: 'vit_goji', name: 'Ягоди годжі лимон', price: 65, color: 'bg-gray-100' },
+              { id: 'vit_orange', name: 'Апельсин з м\'ятою', price: 65, color: 'bg-gray-100' },
+              // Фірмові за 45
+              { id: 'tea_assam', name: 'Асам Мокалбарі', price: 45, color: 'bg-gray-100' },
+              { id: 'tea_white_angel', name: 'Білий Ангел', price: 45, color: 'bg-gray-100' },
+              { id: 'tea_carnival', name: 'Карнавал', price: 45, color: 'bg-gray-100' },
+              { id: 'tea_love', name: 'Сад кохання', price: 45, color: 'bg-gray-100' },
+              { id: 'tea_tropic', name: 'Тропічна', price: 45, color: 'bg-gray-100' },
+              { id: 'tea_heaven', name: 'Храм неба', price: 45, color: 'bg-gray-100' },
+              // Фірмові за 35
+              { id: 'tea_green_mtn', name: 'Зелений високогірний', price: 35, color: 'bg-gray-100' },
+              { id: 'tea_kenyan', name: 'Кенійський', price: 35, color: 'bg-gray-100' },
+              { id: 'tea_royal', name: 'Королівський десерт', price: 35, color: 'bg-gray-100' },
+              { id: 'tea_grey', name: 'Сер Чарльз Грей', price: 35, color: 'bg-gray-100' },
+              { id: 'tea_morocco', name: 'Марокканська м\'ята', price: 35, color: 'bg-gray-100' },
+            ]
+          }
+        };
+
+        // --- ДОПОМІЖНІ ФУНКЦІЇ ---
+
+        const getRandomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+        const generateOrder = () => {
+          const weightedCategories = ['savory', 'savory', 'sweet', 'hot', 'hot', 'tea'];
+          
+          const itemCount = getRandomInt(1, 4);
+          const items = [];
+
+          for (let i = 0; i < itemCount; i++) {
+            const randCatId = weightedCategories[getRandomInt(0, weightedCategories.length - 1)];
+            const catItems = MENU_DATA[randCatId].items;
+            const randItem = catItems[getRandomInt(0, catItems.length - 1)];
+            
+            let item = { 
+              ...randItem, 
+              uniqueId: Math.random().toString(36).substr(2, 9),
+              selectedModifiers: {} 
+            };
+            
+            if (item.modifiers) {
+              item.modifiers.forEach(modType => {
+                const options = MODIFIERS[modType].options;
+                item.selectedModifiers[modType] = options[getRandomInt(0, options.length - 1)];
+              });
+            }
+            
+            items.push(item);
+          }
+
+          const isDineIn = Math.random() > 0.5;
+          
+          return {
+            items,
+            type: isDineIn ? 'В закладі' : 'З собою',
+            table: isDineIn ? getRandomInt(1, 10) : null,
+            payment: Math.random() > 0.5 ? 'Карта' : 'Готівка'
+          };
+        };
+
+        // --- КОМПОНЕНТ APP ---
+
+        function App() {
+          // --- FIREBASE STATE & INIT ---
+          const [db, setDb] = useState(null);
+          const [auth, setAuth] = useState(null);
+          const [userId, setUserId] = useState(null);
+          const [isAuthReady, setIsAuthReady] = useState(false);
+          const [highScores, setHighScores] = useState([]);
+          const [loadingScores, setLoadingScores] = useState(true);
+
+          // Ініціалізація Firebase
+          useEffect(() => {
+            if (!initializeApp) {
+                console.error("Firebase functions not loaded. Check network connection or CDN links.");
+                setIsAuthReady(true);
+                setLoadingScores(false);
+                return;
+            }
+
+            try {
+              // Використовуємо глобальні змінні, виставлені у <script type="module">
+              const appId = window.__app_id || 'default-app-id';
+              const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+              
+              const app = initializeApp(firebaseConfig);
+              const firestore = getFirestore(app);
+              const firebaseAuth = getAuth(app);
+              
+              setDb(firestore);
+              setAuth(firebaseAuth);
+
+              const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+                if (!user) {
+                  // Якщо не залогінений, спробуємо автентифікуватися
+                  try {
+                    if (window.__initial_auth_token) {
+                      await signInWithCustomToken(firebaseAuth, window.__initial_auth_token);
+                    } else {
+                      await signInAnonymously(firebaseAuth);
+                    }
+                  } catch (error) {
+                    console.error("Firebase Auth Error:", error);
+                    // Використовуємо випадковий ID, якщо автентифікація не вдалася
+                    setUserId(crypto.randomUUID()); 
+                  }
+                } else {
+                  setUserId(user.uid);
+                }
+                setIsAuthReady(true);
+              });
+
+              return () => unsubscribe();
+            } catch (error) {
+              console.error("Failed to initialize Firebase:", error);
+              setIsAuthReady(true); // Продовжуємо навіть без Firebase
+            }
+          }, []);
+
+          // Завантаження таблиці лідерів
+          useEffect(() => {
+            if (!isAuthReady || !db) return;
+
+            setLoadingScores(true);
+            const appId = window.__app_id || 'default-app-id';
+            // Шлях для публічних даних: /artifacts/{appId}/public/data/highscores
+            const scoresCollectionPath = `/artifacts/${appId}/public/data/highscores`;
+            const q = query(collection(db, scoresCollectionPath), orderBy("time", "asc"), limit(10));
+            
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+              const scores = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+              }));
+              setHighScores(scores);
+              setLoadingScores(false);
+            }, (error) => {
+              console.error("Error fetching high scores:", error);
+              setLoadingScores(false);
+            });
+
+            return () => unsubscribe();
+          }, [isAuthReady, db]);
+
+          // --- GAME STATE ---
+          const [gameState, setGameState] = useState('START'); 
+          const [targetOrder, setTargetOrder] = useState(null);
+          const [userItems, setUserItems] = useState([]);
+          const [timer, setTimer] = useState(5);
+          const [startTime, setStartTime] = useState(0);
+          
+          // POS State
+          const [activeCategory, setActiveCategory] = useState('savory');
+          const [pendingItem, setPendingItem] = useState(null); 
+          const [currentModIndex, setCurrentModIndex] = useState(0);
+          
+          // Context State
+          const [contextStep, setContextStep] = useState('TYPE'); 
+          const [selectedType, setSelectedType] = useState(null);
+          const [selectedTable, setSelectedTable] = useState('');
+          
+          // Global result store
+          const [lastResult, setLastResult] = useState(null);
+
+
+          const startNewRound = () => {
+            const newOrder = generateOrder();
+            setTargetOrder(newOrder);
+            setUserItems([]);
+            setTimer(5);
+            setActiveCategory('savory');
+            setContextStep('TYPE');
+            setSelectedType(null);
+            setSelectedTable('');
+            setPendingItem(null);
+            setLastResult(null);
+            setGameState('MEMORIZE');
+          };
+
+          const goToMainMenu = () => {
+            setGameState('START');
+            setLastResult(null);
+            setTargetOrder(null);
+            setUserItems([]);
+          };
+
+          useEffect(() => {
+            let interval;
+            if (gameState === 'MEMORIZE') {
+              interval = setInterval(() => {
+                setTimer((prev) => {
+                  if (prev <= 1) {
+                    clearInterval(interval);
+                    setGameState('POS');
+                    setStartTime(Date.now());
+                    return 0;
+                  }
+                  return prev - 1;
+                });
+              }, 1000);
+            }
+            return () => clearInterval(interval);
+          }, [gameState]);
+
+          // --- ЛОГІКА FIREBASE ---
+          const saveHighScore = async (time) => {
+            if (!db || !userId) {
+              console.warn("Cannot save score: Firebase not ready or userId missing.");
+              return;
+            }
+            
+            const appId = window.__app_id || 'default-app-id';
+            const scoresCollectionPath = `/artifacts/${appId}/public/data/highscores`;
+            
+            const username = `Гравець-${userId.substring(0, 4).toUpperCase()}`;
+
+            try {
+              await addDoc(collection(db, scoresCollectionPath), {
+                userId: userId,
+                username: username,
+                time: time,
+                timestamp: serverTimestamp(),
+              });
+              console.log("Score saved successfully!");
+            } catch (error) {
+              console.error("Error saving score:", error);
+            }
+          };
+
+          // --- ЛОГІКА ГРИ ---
+
+          const handleItemClick = (item) => {
+            if (item.modifiers && item.modifiers.length > 0) {
+              setPendingItem({ ...item, tempModifiers: {} });
+              setCurrentModIndex(0);
+            } else {
+              addToUserOrder(item, {});
+            }
+          };
+
+          const handleModifierSelect = (option) => {
+            if (!pendingItem) return;
+
+            const currentModType = pendingItem.modifiers[currentModIndex];
+            const updatedModifiers = { ...pendingItem.tempModifiers, [currentModType]: option };
+
+            if (currentModIndex >= pendingItem.modifiers.length - 1) {
+              addToUserOrder(pendingItem, updatedModifiers);
+              setPendingItem(null);
+              setCurrentModIndex(0);
+            } else {
+              setPendingItem({ ...pendingItem, tempModifiers: updatedModifiers });
+              setCurrentModIndex(currentModIndex + 1);
+            }
+          };
+
+          const addToUserOrder = (item, modifiers) => {
+            const newItem = { 
+              ...item, 
+              selectedModifiers: modifiers, 
+              uniqueId: Math.random().toString(36).substr(2, 9) 
+            };
+            delete newItem.tempModifiers; 
+            setUserItems([...userItems, newItem]);
+          };
+
+          const removeUserItem = (uniqueId) => {
+            setUserItems(userItems.filter(i => i.uniqueId !== uniqueId));
+          };
+
+          const checkOrderItems = useMemo(() => {
+            if (!targetOrder || userItems.length === 0) return false;
+            if (userItems.length !== targetOrder.items.length) return false;
+
+            const getSig = (item) => {
+              const mods = item.selectedModifiers ? Object.values(item.selectedModifiers).sort().join('|') : '';
+              return `${item.id}|${mods}`;
+            };
+
+            const targetSigs = targetOrder.items.map(getSig).sort();
+            const userSigs = userItems.map(getSig).sort();
+
+            return JSON.stringify(targetSigs) === JSON.stringify(userSigs);
+          }, [userItems, targetOrder]);
+
+          const finishPosPhase = () => {
+            if (checkOrderItems) {
+              setGameState('CONTEXT');
+            }
+          };
+
+          const handlePayment = (method) => {
+            const finalTime = Date.now();
+            const roundTime = (finalTime - startTime) / 1000;
+            
+            const isTypeCorrect = selectedType === targetOrder.type;
+            const isPaymentCorrect = method === targetOrder.payment;
+            const isTableCorrect = selectedType === 'З собою' ? true : parseInt(selectedTable) === targetOrder.table;
+
+            const success = isTypeCorrect && isPaymentCorrect && isTableCorrect;
+            
+            const result = { success, time: roundTime };
+            setLastResult(result);
+
+            if (success) {
+                saveHighScore(roundTime);
+            }
+
+            setGameState('RESULT');
+          };
+
+          const renderItemIcon = (item, categoryId) => {
+              if (categoryId === 'hot') return <Coffee className="opacity-40" size={32} />;
+              if (categoryId === 'tea') return <Droplet className="opacity-40" size={32} />;
+              if (categoryId === 'savory') return <Utensils className="opacity-40" size={32} />;
+              if (categoryId === 'sweet') return <Croissant className="opacity-40" size={32} />;
+              return <ChefHat className="opacity-40" size={32} />;
+          };
+
+          const renderItemName = (item) => {
+            const mods = item.selectedModifiers ? Object.values(item.selectedModifiers).join(', ') : '';
+            return (
+              <div className="flex flex-col leading-tight">
+                <span className="font-semibold">{item.name}</span>
+                {mods && <span className="text-[10px] font-bold text-orange-600 bg-orange-100 px-1 rounded w-fit mt-1">{mods}</span>}
+              </div>
+            );
+          };
+          
+          const getUsername = (id) => `Гравець-${id.substring(0, 4).toUpperCase()}`;
+
+          // --- РЕНДЕР: ТАБЛИЦЯ ЛІДЕРІВ ---
+          const Leaderboard = () => (
+            <div className="bg-white p-6 rounded-3xl shadow-xl w-full max-w-sm">
+                <h3 className="text-xl font-bold text-center text-gray-800 mb-4 border-b pb-2 flex items-center justify-center gap-2">
+                    <Award size={24} className="text-yellow-500" /> Таблиця Лідерів
+                </h3>
+                <div className="text-sm text-gray-500 text-center mb-4">
+                  <p>Ваш ID: <span className="font-mono font-semibold text-gray-700">{userId || 'Завантаження...'}</span></p>
+                  <p className="text-xs">Результати зберігаються публічно.</p>
+                </div>
+                {loadingScores ? (
+                    <div className="text-center py-8 text-gray-400">Завантаження...</div>
+                ) : highScores.length === 0 ? (
+                    <div className="text-center py-8 text-gray-400">Ще немає результатів. Будь першим!</div>
+                ) : (
+                    <ul className="space-y-2">
+                        {highScores.map((score, index) => (
+                            <li key={score.id} className={`flex justify-between items-center p-3 rounded-xl shadow-sm ${score.userId === userId ? 'bg-orange-100 border-2 border-orange-500 font-bold' : 'bg-stone-50'}`}>
+                                <div className="flex items-center gap-3">
+                                    <span className={`w-6 h-6 flex items-center justify-center rounded-full text-white text-xs font-bold ${index === 0 ? 'bg-yellow-500' : index === 1 ? 'bg-gray-400' : index === 2 ? 'bg-amber-700' : 'bg-gray-300'}`}>
+                                        {index + 1}
+                                    </span>
+                                    <span className="truncate text-sm">
+                                        {score.username || getUsername(score.userId)}
+                                    </span>
+                                </div>
+                                <span className={`font-mono text-sm ${index === 0 ? 'text-yellow-600' : 'text-gray-700'}`}>
+                                    {score.time ? score.time.toFixed(1) + ' с' : 'N/A'}
+                                </span>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+          );
+
+          // --- РЕНДЕР ОСНОВНОЇ ГРИ ---
+
+          if (gameState === 'START') {
+            return (
+              <div className="flex flex-col items-center justify-center h-[100dvh] bg-stone-100 text-gray-800 font-sans p-4 overflow-y-auto">
+                <div className="flex flex-col md:flex-row gap-6 max-w-5xl w-full my-auto">
+                     {/* LEFT: Game Intro */}
+                     <div className="md:w-1/2 bg-white p-8 rounded-3xl shadow-xl text-center border-t-8 border-orange-500">
+                        <div className="flex justify-center mb-4">
+                            <div className="bg-orange-100 p-4 rounded-full">
+                                <Croissant size={48} className="text-orange-600" />
+                            </div>
+                        </div>
+                        <h1 className="text-3xl font-bold mb-2 text-gray-900">Lviv Croissants</h1>
+                        <h2 className="text-xl font-semibold mb-6 text-gray-500">Speedrun Trainer v4.2 (Online)</h2>
+                        <button onClick={startNewRound} className="w-full py-4 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl text-xl shadow-lg transform active:scale-95 transition-all">
+                            РОЗПОЧАТИ ЗМІНУ
+                        </button>
+                    </div>
+                    {/* RIGHT: Leaderboard */}
+                    <div className="md:w-1/2">
+                        <Leaderboard />
+                    </div>
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === 'MEMORIZE') {
+            return (
+              <div className="flex flex-col h-[100dvh] bg-gray-900 text-white relative">
+                <div className="absolute inset-0 flex items-center justify-center opacity-10 select-none pointer-events-none">
+                    <span className="text-[20rem] font-bold font-mono">{timer}</span>
+                </div>
+                <div className="z-10 flex flex-col items-center justify-center h-full p-4">
+                  <div className="bg-white text-black w-full max-w-md rounded-xl shadow-2xl p-6 border-t-8 border-orange-500 animate-in zoom-in duration-300">
+                     <h3 className="text-xl font-bold text-center text-gray-400 mb-4 tracking-widest uppercase border-b pb-2">Замовлення</h3>
+                     <div className="space-y-3 mb-6">
+                        {targetOrder.items.map((item, idx) => (
+                            <div key={idx} className="flex justify-between items-start border-b border-dashed border-gray-200 pb-2 last:border-0">
+                                <div className="text-lg font-medium">{renderItemName(item)}</div>
+                            </div>
+                        ))}
+                     </div>
+                     <div className="bg-stone-100 p-4 rounded-lg flex justify-between items-center">
+                        <div className="flex flex-col">
+                            <span className="text-[10px] text-gray-500 font-bold uppercase">Тип</span>
+                            <span className="font-bold text-lg">{targetOrder.type} {targetOrder.table && `№${targetOrder.table}`}</span>
+                        </div>
+                        <div className="flex flex-col text-right">
+                            <span className="text-[10px] text-gray-500 font-bold uppercase">Оплата</span>
+                            <span className="font-bold text-lg text-orange-600">{targetOrder.payment}</span>
+                        </div>
+                     </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === 'POS') {
+            return (
+              <div className="flex flex-col h-[100dvh] bg-stone-50 text-gray-800 select-none overflow-hidden">
+                {/* TOP BAR (ORDER TASK) */}
+                <div className="flex-shrink-0 bg-gray-900 text-white p-2 px-3 flex justify-between items-center shadow-md z-30 h-14">
+                   <div className="flex gap-2 overflow-x-auto whitespace-nowrap max-w-[75%] scrollbar-hide items-center h-full">
+                      <span className="text-gray-400 font-bold text-xs mr-1">ЗАМОВЛЕННЯ:</span>
+                      {targetOrder.items.map((i, idx) => (
+                          <span key={idx} className="bg-gray-800 border border-gray-700 px-2 py-1 rounded flex items-center gap-1 text-xs shadow-sm">
+                              {i.name} 
+                              {i.selectedModifiers && Object.values(i.selectedModifiers).length > 0 && (
+                                <span className="bg-orange-600 text-white text-[10px] px-1.5 rounded font-bold">
+                                  {Object.values(i.selectedModifiers).map(v => v.substring(0,3)).join('.')}
+                                </span>
+                              )}
+                          </span>
+                      ))}
+                   </div>
+                   <div className="flex flex-col items-end leading-none font-mono text-yellow-400 text-xs">
+                     <span className="font-bold">{targetOrder.type} {targetOrder.table}</span>
+                     <span className="opacity-70">{targetOrder.payment}</span>
+                   </div>
+                </div>
+
+                <div className="flex flex-grow overflow-hidden relative">
+                  {/* LEFT COLUMN: CATEGORIES & GRID */}
+                  <div className="flex-grow flex flex-col w-2/3 border-r border-gray-200 bg-white">
+                    {/* CATEGORY BAR - FIXED. Висота закріплена за допомогою flex-shrink-0 */}
+                    <div className="flex-shrink-0 flex overflow-x-auto border-b border-gray-200 scrollbar-hide bg-white z-20 shadow-md">
+                      {Object.values(MENU_DATA).map(cat => (
+                        <button
+                          key={cat.id}
+                          onClick={() => setActiveCategory(cat.id)}
+                          className={`flex-shrink-0 py-3 px-4 font-bold text-xs md:text-sm uppercase tracking-wide transition-colors whitespace-nowrap
+                            ${activeCategory === cat.id ? 'bg-orange-500 text-white' : 'text-gray-700 hover:bg-orange-50'}`}
+                        >
+                          {cat.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* GRID CONTENT */}
+                    <div className="flex-grow overflow-y-auto p-2 bg-stone-50 z-0">
+                      <div className="grid grid-cols-3 gap-2 pb-20">
+                        {MENU_DATA[activeCategory].items.map(item => (
+                          <button
+                            key={item.id}
+                            onClick={() => handleItemClick(item)}
+                            className={`${item.color || 'bg-gray-100'} border border-black/5 rounded-xl shadow-sm h-32 p-2 flex flex-col items-center justify-between text-center leading-tight transition-all active:scale-95 hover:shadow-md relative overflow-hidden hover:bg-white`}
+                          >
+                            <div className="absolute top-2 right-2 text-gray-400">{renderItemIcon(item, activeCategory)}</div>
+                            <span className="font-bold text-gray-700 text-sm z-10 mt-4 line-clamp-2">{item.name}</span>
+                            <div className="w-full flex justify-between items-end mt-1">
+                                <span className="text-[10px] font-bold text-gray-500 bg-white/70 px-1.5 py-0.5 rounded border border-gray-200">{item.price}₴</span>
+                                {item.modifiers && (
+                                    <span className="text-[10px] bg-orange-500 text-white px-1.5 rounded-full font-bold shadow-sm">
+                                        +
+                                    </span>
+                                )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* RIGHT COLUMN: CURRENT RECEIPT */}
+                  <div className="w-1/3 bg-white flex flex-col shadow-xl z-20 border-l border-gray-200">
+                    <div className="flex-shrink-0 bg-stone-100 p-3 text-xs font-bold text-gray-500 uppercase tracking-wider border-b flex justify-between items-center">
+                        <span>Поточний чек</span>
+                        <span className="bg-stone-200 px-2 rounded-full text-gray-700">{userItems.length}</span>
+                    </div>
+                    <div className="flex-grow overflow-y-auto p-2 space-y-2 bg-white">
+                      {userItems.map((item) => (
+                        <div key={item.uniqueId} className="relative group bg-orange-50 border-l-4 border-orange-400 p-2 rounded shadow-sm pr-8 animate-in fade-in slide-in-from-right-4 duration-150">
+                          {renderItemName(item)}
+                          <div className="text-[10px] text-gray-400 font-mono mt-1">{item.price} ₴</div>
+                          <button 
+                            onClick={() => removeUserItem(item.uniqueId)}
+                            className="absolute top-1/2 -translate-y-1/2 right-2 text-red-300 hover:text-red-500 p-1 transition-colors"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex-shrink-0 p-3 border-t bg-stone-50">
+                        <button
+                            onClick={finishPosPhase}
+                            disabled={!checkOrderItems}
+                            className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all
+                                ${checkOrderItems 
+                                    ? 'bg-green-500 text-white hover:bg-green-600 transform active:scale-95' 
+                                    : 'bg-stone-200 text-gray-400 cursor-not-allowed'}`}
+                        >
+                            {checkOrderItems ? 'ОПЛАТА' : 'ЗБЕРІТЬ ЗАМОВЛЕННЯ'}
+                        </button>
+                    </div>
+                  </div>
+
+                  {/* MODAL */}
+                  {pendingItem && (
+                    <div className="absolute inset-0 bg-black/60 z-50 flex items-end md:items-center justify-center backdrop-blur-sm animate-in fade-in duration-150">
+                      <div className="bg-white w-full md:w-[500px] md:rounded-2xl rounded-t-2xl overflow-hidden shadow-2xl animate-in slide-in-from-bottom-10 duration-200">
+                        <div className="bg-orange-500 text-white p-4 flex justify-between items-center">
+                          <h3 className="font-bold text-lg">
+                            {pendingItem.name} <span className="opacity-70 text-sm font-normal">({currentModIndex + 1}/{pendingItem.modifiers.length})</span>
+                          </h3>
+                          <button onClick={() => setPendingItem(null)} className="text-white/80 hover:text-white">✕</button>
+                        </div>
+                        <div className="p-6">
+                          <h4 className="text-center text-gray-500 font-bold uppercase text-sm mb-4">
+                            {MODIFIERS[pendingItem.modifiers[currentModIndex]].title}
+                          </h4>
+                          <div className="grid grid-cols-2 gap-4">
+                            {MODIFIERS[pendingItem.modifiers[currentModIndex]].options.map(opt => (
+                              <button
+                                key={opt}
+                                onClick={() => handleModifierSelect(opt)}
+                                className="h-20 bg-stone-50 border-2 border-stone-200 hover:border-orange-500 rounded-xl text-lg font-bold text-gray-700 hover:text-orange-600 transition-all active:scale-95 flex items-center justify-center shadow-sm"
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === 'CONTEXT') {
+            return (
+                <div className="flex flex-col h-[100dvh] bg-stone-100 font-sans">
+                     <div className="bg-gray-800 text-white p-4 text-center shadow-md z-10">
+                        <div className="text-xs text-gray-400 font-bold uppercase tracking-wider">Перевірка</div>
+                        <div className="text-2xl font-bold text-yellow-400 mt-1">
+                            {targetOrder.type} {targetOrder.table && `(Стіл ${targetOrder.table})`} | {targetOrder.payment}
+                        </div>
+                    </div>
+                    <div className="flex-grow flex flex-col items-center justify-center p-4 gap-6">
+                        {contextStep === 'TYPE' && (
+                            <div className="grid grid-cols-2 gap-4 w-full max-w-lg h-64 animate-in zoom-in duration-200">
+                                <button onClick={() => { setSelectedType('В закладі'); setContextStep('TABLE'); }} className="bg-white border-b-8 border-gray-200 active:border-b-0 active:translate-y-2 rounded-2xl flex flex-col items-center justify-center gap-4 text-gray-700 font-bold text-2xl hover:bg-orange-50 transition-colors">
+                                    <Utensils size={48} className="text-gray-400" /> В ЗАКЛАДІ
+                                </button>
+                                <button onClick={() => { setSelectedType('З собою'); setContextStep('PAYMENT'); }} className="bg-white border-b-8 border-gray-200 active:border-b-0 active:translate-y-2 rounded-2xl flex flex-col items-center justify-center gap-4 text-gray-700 font-bold text-2xl hover:bg-orange-50 transition-colors">
+                                    <ShoppingBag size={48} className="text-gray-400" /> З СОБОЮ
+                                </button>
+                            </div>
+                        )}
+                        {contextStep === 'TABLE' && (
+                            <div className="bg-white p-6 rounded-3xl shadow-xl w-full max-w-sm animate-in slide-in-from-right duration-200">
+                                <div className="text-4xl font-bold text-center mb-6 bg-stone-100 p-4 rounded-2xl border-inner min-h-[80px] flex items-center justify-center text-gray-800">
+                                    {selectedTable || <span className="text-gray-300 animate-pulse">_</span>}
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    {[1,2,3,4,5,6,7,8,9].map(n => (
+                                        <button key={n} onClick={() => setSelectedTable(prev => prev.length < 2 && parseInt(prev + n) <= 10 ? prev + n : prev)} className="h-16 bg-stone-50 rounded-xl text-2xl font-bold text-gray-700 hover:bg-orange-100 active:scale-95 transition-transform">{n}</button>
+                                    ))}
+                                    <button onClick={() => setSelectedTable('')} className="h-16 text-red-400 font-bold hover:bg-red-50 rounded-xl transition-colors">C</button>
+                                    <button onClick={() => selectedTable && setContextStep('PAYMENT')} className="h-16 bg-green-500 text-white rounded-xl flex items-center justify-center shadow-lg shadow-green-200 active:scale-95 transition-transform"><Check size={32} /></button>
+                                </div>
+                            </div>
+                        )}
+                        {contextStep === 'PAYMENT' && (
+                            <div className="grid grid-cols-2 gap-4 w-full max-w-lg h-64 animate-in slide-in-from-right duration-200">
+                                <button onClick={() => handlePayment('Готівка')} className="bg-white border-b-8 border-gray-200 active:border-b-0 active:translate-y-2 rounded-2xl flex flex-col items-center justify-center gap-4 text-green-700 font-bold text-2xl hover:bg-green-50 transition-colors">
+                                    <Banknote size={48} className="text-green-300" /> ГОТІВКА
+                                </button>
+                                <button onClick={() => handlePayment('Карта')} className="bg-white border-b-8 border-gray-200 active:border-b-0 active:translate-y-2 rounded-2xl flex flex-col items-center justify-center gap-4 text-blue-700 font-bold text-2xl hover:bg-blue-50 transition-colors">
+                                    <CreditCard size={48} className="text-blue-300" /> КАРТА
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+          }
+
+          if (gameState === 'RESULT') {
+            const result = lastResult || { success: false, time: 0 };
+            // Припускаємо, що highScores відсортовані за зростанням часу
+            const isNewHighScore = highScores.length > 0 && result.success && result.time < highScores[0].time;
+            
+            return (
+                <div className={`flex flex-col items-center justify-center h-[100dvh] text-white transition-colors duration-500 ${result.success ? 'bg-green-500' : 'bg-red-500'}`}>
+                    <div className="text-center animate-in zoom-in duration-300 p-8">
+                        <div className="bg-white/20 p-6 rounded-full inline-block mb-6 backdrop-blur-sm">
+                            {result.success ? <Check size={80} className="text-white drop-shadow-md" /> : <AlertCircle size={80} className="text-white drop-shadow-md" />}
+                        </div>
+                        <h2 className="text-6xl font-black mb-2 tracking-tight drop-shadow-sm">{result.success ? 'СУПЕР!' : 'ПОМИЛКА'}</h2>
+                        <p className="text-xl opacity-90 mb-4 font-medium">{result.success ? 'Замовлення прийнято вірно' : 'Будьте уважніші до деталей'}</p>
+                        
+                        {result.success && (
+                            <div className="inline-block mt-4">
+                                {isNewHighScore && <div className="text-3xl font-extrabold text-yellow-300 mb-2 animate-pulse">НОВИЙ РЕКОРД!</div>}
+                                <span className="text-sm uppercase font-bold opacity-70 block mb-1">Час раунду</span>
+                                <p className="text-4xl font-mono bg-white text-green-600 px-6 py-3 rounded-2xl shadow-xl font-bold">{result.time.toFixed(1)} с</p>
+                            </div>
+                        )}
+                    </div>
+                     {/* НОВІ КНОПКИ ДІЙ */}
+                    <div className="absolute bottom-0 left-0 right-0 p-6 bg-white/10 backdrop-blur-sm flex flex-col md:flex-row gap-4 justify-center animate-in slide-in-from-bottom-6 duration-200">
+                        <button
+                            onClick={startNewRound}
+                            className={`py-4 px-8 rounded-xl font-bold text-xl transition-all shadow-lg w-full md:w-auto
+                                ${result.success ? 'bg-orange-500 hover:bg-orange-600 text-white' : 'bg-stone-100 hover:bg-stone-200 text-gray-800'}`}
+                        >
+                            <RefreshCw size={20} className="inline mr-2" /> НОВА ЗМІНА (Грати далі)
+                        </button>
+                        <button
+                            onClick={goToMainMenu}
+                            className="py-4 px-8 rounded-xl font-bold text-xl transition-all shadow-lg w-full md:w-auto bg-gray-700 hover:bg-gray-800 text-white"
+                        >
+                            <Award size={20} className="inline mr-2" /> ГОЛОВНЕ МЕНЮ (Лідерборд)
+                        </button>
+                    </div>
+                </div>
+            );
+          }
+
+          return null;
+        }
+
+        // Render the App component once the window is loaded
+        function renderApp() {
+            const rootElement = document.getElementById('root');
+            if (rootElement) {
+                ReactDOM.createRoot(rootElement).render(<App />);
+            } else {
+                console.error("Root element not found.");
+            }
+        }
+
+        // Додаємо затримку для гарантованого завантаження модулів Firebase
+        window.onload = () => {
+             // Перевірка, чи завантажився об'єкт window.firebase
+             if (window.firebase && window.firebase.initializeApp) {
+                 renderApp();
+             } else {
+                 // Спроба рендерингу через невелику затримку, якщо модулі завантажуються асинхронно
+                 setTimeout(renderApp, 500);
+             }
+        };
+
+    </script>
+</body>
+</html>
