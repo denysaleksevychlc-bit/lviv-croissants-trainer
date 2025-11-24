@@ -1,1 +1,0 @@
-# lviv-croissants-trainer
